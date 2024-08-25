@@ -1,0 +1,2 @@
+[console_scripts]
+ns_driver = ns_solvers.driver:main
