@@ -3,82 +3,126 @@ Creates a staggered uniform grid for FD navier stokes solvers
 """
 
 import functools
+from dataclasses import dataclass, field
+from enum import Enum, auto
 
 import numpy as np
 from plotly import graph_objects as go
 
 
-class UniformGrid:
+class CellType(Enum):
+    GHOST = auto()
+    DOMAIN = auto()
+
+
+@dataclass
+class CellNeighbor:
+    left: int | None = field(default=lambda: None)
+    right: int | None = field(default=lambda: None)
+    bottom: int | None = field(default=lambda: None)
+    top: int | None = field(default=lambda: None)
+
+
+class Cell:
+    def __init__(self, cell_type: CellType, center: tuple[float, ...]):
+        self.cell_type = cell_type
+        self.center = center
+        self.edge_idxs = CellNeighbor()
+        self.cell_neighbors = CellNeighbor()
+
+    def __repr__(self):
+        return f"Cell({self.cell_type=})"
+
+
+class StaggeredGrid:
+    """
+    With an input of n_cells = (8, 3) and ghost_nodes = True
+    creates a staggered grid with the following structure:
+    *   *   *   *   *   *   *   *   *   *
+    -   -   -   -   -   -   -   -   -   -
+    * | x | x | x | x | x | x | x | x | *
+    -   -   -   -   -   -   -   -   -   -
+    * | x | x | x | x | x | x | x | x | *
+    -   -   -   -   -   -   -   -   -   -
+    * | x | x | x | x | x | x | x | x | *
+    -   -   -   -   -   -   -   -   -   -
+    *   *   *   *   *   *   *   *   *   *
+
+    * : ghost node
+    x : domain node
+    | : x-edge
+    - : y-edge
+
+    And defines important properties such as edge_neighbors, laplacian, and other methods
+    for running chorins method on a staggered grid
+    """
+
     def __init__(
         self,
         n_cells: tuple[int, ...],
-        bounds: tuple[tuple[float, float], ...],
+        domain: tuple[tuple[float, float], ...],
+        use_ghost_nodes: bool = True,
     ):
-        self.n_cells = n_cells
-        self.n_vertices = tuple(n + 1 for n in n_cells)
-        self.bounds = bounds
-        self.cell_dx = tuple((ub - lb) / n for (lb, ub), n in zip(bounds, n_cells))
-        self.n_dim = len(self.n_vertices)
+        self.use_ghost_nodes = use_ghost_nodes
+        self.n_dim = len(n_cells)
+        self.domain = domain
+        self.n_cells = tuple(c + 2 * int(use_ghost_nodes) for c in n_cells)  # Add ghost
+        self.n_domain_cells = n_cells
+        self.dx = tuple((d[1] - d[0]) / n for d, n in zip(domain, n_cells))
 
-        self.strides_vertices = np.fromiter(
-            (
-                np.prod(self.n_vertices) / np.prod(self.n_vertices[i:])
-                for i in range(self.n_dim)
-            ),
-            dtype=int,
+        self.edges, self.edge_directions = self._create_edges_2d()
+        self.cells = self._create_cells_2d()
+
+    def plot_cells(self):
+        """
+        plot cells, centers and edges
+        :return:
+        """
+        fig = go.Figure()
+
+        # plot centers
+        x_d, y_d = zip(
+            *[cell.center for cell in self.cells if cell.cell_type == CellType.DOMAIN]
         )
-
-        self.strides_cells = np.fromiter(
-            (
-                np.prod(self.n_cells) / np.prod(self.n_cells[i:])
-                for i in range(self.n_dim)
-            ),
-            dtype=int,
-        )
-
-        # N + 1 x ... vertices compared to N cells
-        self.vertices: np.ndarray[float] = self._get_vertices()
-        self.edge_vertices, self.edge_directions, self.edge_neighbors = (
-            self._get_edge_vertices()
-        )
-        self.internal_edge_mask: np.ndarray[bool] = self._get_internal_edge_mask()
-
-        self.neighbors = self._neighbors()
-
-    @functools.cached_property
-    def laplacian(self):
-        n_points = int(np.prod(self.n_cells))
-        laplacian = np.zeros((n_points, n_points))
-        for i in range(n_points):
-            ones_idxs = i + np.tile(self.strides_cells, self.n_dim) * np.repeat(
-                np.array([-1, 1]), self.n_dim
+        fig.add_trace(
+            go.Scatter(
+                x=x_d,
+                y=y_d,
+                mode="markers",
+                name="domain",
+                marker=dict(color="blue"),
             )
-            valid_ones = ones_idxs[np.logical_and(ones_idxs >= 0, ones_idxs < n_points)]
-            laplacian[i, valid_ones] = 1
-            laplacian[i, i] = -4
+        )
+        if self.use_ghost_nodes:
+            x_g, y_g = zip(
+                *[
+                    cell.center
+                    for cell in self.cells
+                    if cell.cell_type == CellType.GHOST
+                ]
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=x_g,
+                    y=y_g,
+                    mode="markers",
+                    name="ghost",
+                    marker=dict(color="blue", symbol="circle-open"),
+                )
+            )
 
-        return laplacian
+        # plot mesh lines
+        x_edges = np.unique(self.edges[:, self.edge_directions == 0][0])
+        y_edges = np.unique(self.edges[:, self.edge_directions == 1][1])
+        for x in x_edges:
+            fig.add_vline(x, line=dict(color="blue", width=0.5))
+        for y in y_edges:
+            fig.add_hline(y, line=dict(color="blue", width=0.5))
+
+        fig.show()
 
     @functools.cached_property
-    def center_to_edge_neighbors(self) -> dict[str, np.ndarray[int]]:
-        l_neighbors = np.concatenate(
-            [
-                np.arange(self.n_cells[0]) + i * self.n_vertices[0]
-                for i in range(self.n_cells[0])
-            ]
-        )
-        x_edges_count = int(np.sum(self.edge_directions == 0))
-        r_neighbors = l_neighbors + self.strides_cells[0]
-        b_neighbors = np.arange(np.prod(self.n_cells)) + x_edges_count
-        t_neighbors = b_neighbors + self.strides_cells[1]
-        return {  # type: ignore
-            "left": l_neighbors,
-            "right": r_neighbors,
-            "bottom": b_neighbors,
-            "top": t_neighbors,
-        }
-
-    def _get_internal_edge_mask(self) -> np.ndarray[bool]:
+    def internal_edge_mask(self) -> np.ndarray[bool]:
         """
         Get mask for internal edges
         :return:
@@ -86,40 +130,104 @@ class UniformGrid:
         edge_masks = []
         # for idx, edge_centers in enumerate(self.edge_vertices):
         for dim in range(self.n_dim):
-            edge_centers = self.edge_vertices[:, self.edge_directions == dim]
+            edge_centers = self.edges[:, self.edge_directions == dim]
             mask = np.zeros(edge_centers.shape[1], dtype=bool)
             for i in range(self.n_dim):
                 mask = np.logical_or(
-                    mask, np.isclose(edge_centers[i], self.bounds[i][0])
+                    mask, np.isclose(edge_centers[i], self.domain[i][0])
                 )
                 mask = np.logical_or(
-                    mask, np.isclose(edge_centers[i], self.bounds[i][1])
+                    mask, np.isclose(edge_centers[i], self.domain[i][1])
                 )
             edge_masks.append(~mask)
         return np.hstack(edge_masks)  # type: ignore
 
-    def _get_vertices(self) -> np.ndarray[float]:
+    @functools.cached_property
+    def edge_neighbors(self):
         """
-        Generates vertices for a uniform grid
+        Create a 2 x n matrix where the first row is the left neighbor and the second row is the right neighbor
+        of each edge in the staggered grid
         :return:
-        (x, y) coordinates of vertices
         """
-        coord_gen = (np.linspace(*b, n + 1) for b, n in zip(self.bounds, self.n_cells))
-        pos = np.vstack(list(map(np.ravel, np.meshgrid(*coord_gen))), dtype=float)
-        return pos  # type: ignore
+        n_edges = self.edges.shape[1]
+        strides = np.concatenate(
+            [
+                np.ones(np.sum(self.edge_directions == i), dtype=int)
+                * self.domain_cell_strides[i]
+                for i in range(self.n_dim)
+            ]
+        )
+        l_neighbors = np.arange(n_edges, dtype=int) - strides
+        r_neighbors = np.arange(n_edges, dtype=int) + strides
 
-    def _get_edge_vertices(
-        self,
-    ) -> tuple[np.ndarray[float], np.ndarray[int], np.ndarray[int]]:
+        for i in range(self.n_dim):
+            no_l_neighbor = np.logical_and(
+                self.edge_directions == i, self.edges[i] == self.domain[i][0]
+            )
+            no_r_neighbor = np.logical_and(
+                self.edge_directions == i, self.edges[i] == self.domain[i][1]
+            )
+            l_neighbors[no_l_neighbor] = -1
+            r_neighbors[no_r_neighbor] = -1
+
+        return np.vstack([l_neighbors, r_neighbors])
+
+    def _create_cells_2d(self) -> list[Cell]:
         """
-        Generates vertices for a uniform grid
+        Creates a 2d grid, adding ghost nodes if specified in init
         :return:
-        (x, y) coordinates of vertices
+        """
+        # Generate cells left to right and bottom to top
+        # Add ghost cells outside of domain
+        ops = (np.subtract, np.add) if self.use_ghost_nodes else (np.add, np.subtract)
+        centers = np.meshgrid(
+            np.linspace(
+                ops[0](self.domain[0][0], self.dx[0] / 2),
+                ops[1](self.domain[0][1], self.dx[0] / 2),
+                self.n_cells[0],
+            ),
+            np.linspace(
+                ops[0](self.domain[1][0], self.dx[1] / 2),
+                ops[1](self.domain[1][1], self.dx[1] / 2),
+                self.n_cells[1],
+            ),
+            copy=False,
+        )
+
+        if self.use_ghost_nodes:
+            # determine ghost cells
+            ghost_mask_1 = np.logical_or(
+                np.isclose(centers[0], self.domain[0][0] - self.dx[0] / 2),
+                np.isclose(centers[0], self.domain[0][1] + self.dx[0] / 2),
+            )
+            ghost_mask_2 = np.logical_or(
+                np.isclose(centers[1], self.domain[1][0] - self.dx[1] / 2),
+                np.isclose(centers[1], self.domain[1][1] + self.dx[1] / 2),
+            )
+            ghost_mask = np.logical_or(ghost_mask_1, ghost_mask_2)
+
+            ghost_iter = (
+                CellType.GHOST if g else CellType.DOMAIN for g in ghost_mask.flatten()
+            )
+        else:
+            ghost_iter = (CellType.DOMAIN for _ in range(np.prod(self.n_cells)))
+
+        center_iter = (
+            (x, y) for x, y in zip(centers[0].flatten(), centers[1].flatten())
+        )
+
+        cells = list(
+            Cell(c_type, center) for c_type, center in zip(ghost_iter, center_iter)
+        )
+        return cells
+
+    def _create_edges_2d(self):
+        """
+        Given a 2d grid, create the edge vertices and edge directions
+        :return:
         """
         edge_vertices = []
         edge_directions = []
-        edge_neighbors = []
-        neighbor_offset = 0
         for ind in range(self.n_dim):
             coord_gen = (
                 np.linspace(
@@ -128,7 +236,7 @@ class UniformGrid:
                     n + int(idx == ind),
                 )
                 for idx, ((lb, ub), n, dx) in enumerate(
-                    zip(self.bounds, self.n_cells, self.cell_dx)
+                    zip(self.domain, self.n_domain_cells, self.dx)
                 )
             )
             # Really new edge centers
@@ -138,115 +246,115 @@ class UniformGrid:
             edge_vertices.append(new_edges)
             edge_directions.append(np.ones(new_edges.shape[1], dtype=int) * ind)
 
-            # Generate neighbor indices too
-            # LR strides are 1, UD are n_cells
-            # TODO idk if this will generalize to 3d
-            strides = self.strides_cells[ind] * np.array([-1, 1])
-            new_edge_neighbors = np.tile(np.arange(new_edges.shape[1]), 2).reshape(
-                (2, -1)
-            ) + strides.reshape((-1, 1))
-
-            # mask out lower neighbors
-            new_edge_neighbors[0] = np.where(
-                np.isclose(new_edges[ind], self.bounds[ind][0]),
-                -1,
-                new_edge_neighbors[0],
-            )
-            # mask out upper neighbors
-            new_edge_neighbors[1] = np.where(
-                np.isclose(new_edges[ind], self.bounds[ind][1]),
-                -1,
-                new_edge_neighbors[1],
-            )
-            # apply offset for all edges being in one array
-            new_edge_neighbors = np.where(
-                new_edge_neighbors >= 0, new_edge_neighbors + neighbor_offset, -1
-            )
-            neighbor_offset += new_edges.shape[1]
-
-            edge_neighbors.append(new_edge_neighbors)
-
-        return (
+        return (  # type: ignore
             np.hstack(edge_vertices),
             np.hstack(edge_directions),
-            np.hstack(edge_neighbors),
-        )  # type: ignore
-
-    def plot_vertices(self, fig: go.Figure | None = None, **plkw) -> go.Figure:
-        fig = fig or go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=self.vertices[0].flatten(),
-                y=self.vertices[1].flatten(),
-                mode="markers",
-                **plkw,
-            )
         )
-        return fig
 
-    def plot_edge_vertices(
-        self, fig: go.Figure | None = None, u: np.ndarray[float] | None = None, **plkw
-    ) -> go.Figure:
-        fig = fig or go.Figure()
-        dim_names = ["x", "y", "z"]
-        for dim in range(self.n_dim):
-            edge_centers = self.edge_vertices[:, self.edge_directions == dim]
-            text = None
-            if u is not None:
-                text = u[self.edge_directions == dim]
-            fig.add_trace(
-                go.Scatter(
-                    x=edge_centers[0].flatten(),
-                    y=edge_centers[1].flatten(),
-                    mode="markers",
-                    name=f"{dim_names[dim]}-edge centers",
-                    text=text,
-                    **plkw,
+    @functools.cached_property
+    def center_to_edge_neighbors(self) -> dict[str, np.ndarray[int]]:
+        """
+        Create a dictionary of the indices of the edge neighbors for each cell
+        :return:
+        """
+        l_neighbors = np.concatenate(
+            [
+                np.arange(self.n_domain_cells[0]) + i * (self.n_domain_cells[0] + 1)
+                for i in range(self.n_domain_cells[1])
+            ]
+        )
+        x_edges_count = int(np.sum(self.edge_directions == 0))
+        r_neighbors = l_neighbors + self.domain_cell_strides[0]
+        b_neighbors = np.arange(np.prod(self.n_domain_cells)) + x_edges_count
+        t_neighbors = b_neighbors + self.domain_cell_strides[1]
+        return {  # type: ignore
+            "left": l_neighbors,
+            "right": r_neighbors,
+            "bottom": b_neighbors,
+            "top": t_neighbors,
+        }
+
+    @functools.cached_property
+    def laplacian(self):
+        """
+        Create the laplacian operator matrix for cells,
+        Currently setting ghost nodes equal to their neighbor domain nodes
+        as a boundary condition in the laplacian
+        :return:
+        """
+        n_points = int(np.prod(self.n_cells))
+        laplacian = np.zeros((n_points, n_points))
+        for i in range(n_points):
+            if self.cells[i].cell_type == CellType.DOMAIN:
+                ones_idxs = i + np.tile(self.cell_strides, 2) * np.repeat(
+                    np.array([-1, 1]), self.n_dim
                 )
-            )
-        return fig
+                valid_ones = ones_idxs[
+                    np.logical_and(ones_idxs >= 0, ones_idxs < n_points)
+                ]
+                laplacian[i, valid_ones] = 1
+                laplacian[i, i] = -4
 
-    def plot_lines(self, fig: go.Figure, **plkw):
-        assert len(self.n_vertices) == 2, "Plotting lines only supported in 2d"
-        plot_fns = (fig.add_vline, fig.add_hline)
-        for n_v, b, pfn in zip(self.n_vertices, self.bounds, plot_fns):
-            for x in np.linspace(*b, n_v):
-                pfn(x, line=dict(color="blue", width=0.5))
-        return fig
+            if self.cells[i].cell_type == CellType.GHOST:
+                if self.is_corner(self.cells[i]):
+                    laplacian[i, i] = -1
+                else:
+                    n_idx = self.ghost_neighbor(i)
+                    laplacian[i, i] = -1
+                    laplacian[i, n_idx] = 1
 
-    def _neighbors(self):
-        n_vertices_total = self.vertices.shape[1]
+        return laplacian
 
-        stride_array = np.repeat(self.strides_vertices, 2) * np.tile(
-            np.array([-1, 1]), self.n_dim
+    def is_corner(self, cell: Cell) -> bool:
+        for i in range(self.n_dim):
+            if not np.isclose(cell.center[i], self.domain[i][0]) or np.isclose(
+                cell.center[i], self.domain[i][1]
+            ):
+                return False
+        return True
+
+    def ghost_neighbor(self, cell_idx: int) -> int:
+        """
+        Get the cell that is a neighbor to the given ghost cell
+        """
+        cell = self.cells[cell_idx]
+        neighbor_idx = None
+        for i in range(self.n_dim):
+            if np.isclose(cell.center[i], self.domain[i][0] - self.dx[i] / 2):
+                neighbor_idx = int(cell_idx + self.cell_strides[i])
+            elif np.isclose(cell.center[i], self.domain[i][1] + self.dx[i] / 2):
+                neighbor_idx = int(cell_idx - self.cell_strides[i])
+
+        if neighbor_idx is None:
+            raise ValueError("Not an edge cell")
+        return neighbor_idx
+
+    @functools.cached_property
+    def cell_strides(self):
+        """
+        Strides for moving between cells in the grid
+        :return:
+        """
+        return np.fromiter(
+            (
+                np.prod(self.n_cells) / np.prod(self.n_cells[i:])
+                for i in range(self.n_dim)
+            ),
+            dtype=int,
         )
-        neighbors = np.vstack([stride_array + i for i in range(n_vertices_total)])
-        neighbors = np.where(
-            np.logical_and(neighbors >= 0, neighbors < n_vertices_total), neighbors, -1
+
+    @functools.cached_property
+    def domain_cell_strides(self):
+        """
+        Strides for moving between cells in the domain, excluding ghost cells
+        :return:
+        """
+        n_cells = tuple(n - (2 * int(self.use_ghost_nodes)) for n in self.n_cells)
+        return np.fromiter(
+            (np.prod(n_cells) / np.prod(n_cells[i:]) for i in range(self.n_dim)),
+            dtype=int,
         )
-        return neighbors
 
-
-class UniformStaggeredGrid:
-    """
-    Create a grid of center points and a grid of
-    """
-
-    def __init__(
-        self, n_cells: tuple[int, ...], bounds: tuple[tuple[float, float], ...]
-    ):
-        self.main_grid = UniformGrid(n_cells=n_cells, bounds=bounds)
-        offset_consts = ((b[1] - b[0]) / (nc * 2) for b, nc in zip(bounds, n_cells))
-        offset_bounds = tuple(
-            (b[0] + oc, b[1] - oc) for b, oc in zip(bounds, offset_consts)
-        )
-        offset_n_cells = tuple(n - 1 for n in n_cells)
-        self.offset_grid = UniformGrid(offset_n_cells, offset_bounds)
-
-    def plot_vertices(self, u):
-        fig = go.Figure()
-        self.main_grid.plot_vertices(fig, name="main")
-        self.main_grid.plot_edge_vertices(fig, u)
-        self.main_grid.plot_lines(fig)
-        self.offset_grid.plot_vertices(fig, name="interior")
-        return fig
+    @functools.cached_property
+    def ghost_node_mask(self):
+        return np.array([cell.cell_type == CellType.GHOST for cell in self.cells])

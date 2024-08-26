@@ -1,1 +1,1 @@
-from .uniform import UniformGrid, UniformStaggeredGrid
+from .uniform import StaggeredGrid
