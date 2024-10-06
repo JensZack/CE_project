@@ -100,11 +100,8 @@ def pressure_poisson(
         u[grid.center_to_edge_neighbors["top"]]
         - u[grid.center_to_edge_neighbors["bottom"]]
     ) / grid.dx[1]
-    domain_u_grad = du_dx1 + du_dx2
-
-    # TODO figure out how to pad instead of duplicating buffer
     u_grad = np.zeros(grid.n_cells).flatten()
-    u_grad[~grid.ghost_node_mask] = domain_u_grad
+    u_grad[~grid.ghost_node_mask] = du_dx1 + du_dx2
 
     p_new = jacobi(grid.laplacian, p, rho / dt * u_grad, max_iter=10000)
     return p_new
