@@ -282,26 +282,24 @@ class StaggeredGrid:
         as a boundary condition in the laplacian
         :return:
         """
-        n_points = int(np.prod(self.n_cells))
+        # TODO: laplacian with ghost nodes is not a well conditioned matrix
+
+        n_points = int(np.prod(self.n_domain_cells))
+        cells = [c for idx, c in enumerate(self.cells) if not self.ghost_node_mask[idx]]
         laplacian = np.zeros((n_points, n_points))
         for i in range(n_points):
-            if self.cells[i].cell_type == CellType.DOMAIN:
-                ones_idxs = i + np.tile(self.cell_strides, 2) * np.repeat(
+            if cells[i].cell_type == CellType.DOMAIN:
+                ones_idxs = i + np.tile(self.domain_cell_strides, 2) * np.repeat(
                     np.array([-1, 1]), self.n_dim
                 )
                 valid_ones = ones_idxs[
                     np.logical_and(ones_idxs >= 0, ones_idxs < n_points)
                 ]
-                laplacian[i, valid_ones] = 1
-                laplacian[i, i] = -4
+                laplacian[i, valid_ones] = -1
+                laplacian[i, i] = 4
 
-            if self.cells[i].cell_type == CellType.GHOST:
-                if self.is_corner(self.cells[i]):
-                    laplacian[i, i] = -1
-                else:
-                    n_idx = self.ghost_neighbor(i)
-                    laplacian[i, i] = -1
-                    laplacian[i, n_idx] = 1
+            if cells[i].cell_type == CellType.GHOST:
+                assert False, "Laplacian with ghost nodes is not well conditioned"
 
         return laplacian
 

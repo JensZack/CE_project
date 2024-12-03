@@ -100,11 +100,30 @@ def pressure_poisson(
         u[grid.center_to_edge_neighbors["top"]]
         - u[grid.center_to_edge_neighbors["bottom"]]
     ) / grid.dx[1]
-    u_grad = np.zeros(grid.n_cells).flatten()
-    u_grad[~grid.ghost_node_mask] = du_dx1 + du_dx2
+    # u_grad = np.zeros(grid.n_cells).flatten()
+    # u_grad[~grid.ghost_node_mask] = du_dx1 + du_dx2
+    u_grad = du_dx1 + du_dx2
+    p_internal = p[~grid.ghost_node_mask]
 
-    p_new = jacobi(grid.laplacian, p, rho / dt * u_grad, max_iter=10000)
-    return p_new
+    # to create boundary conditions, set the ghost pressure the edge pressure
+    p_boundaries = grid.laplacian.sum(axis=0) * p_internal
+
+    p[~grid.ghost_node_mask] = jacobi(grid.laplacian, p_internal, rho / dt * u_grad + p_boundaries, max_iter=10000)
+
+    # reapply ghostnodes == boundary nodes
+    p = p.reshape(grid.n_cells)
+    p[0, :] = p[1, :]
+    p[-1, :] = p[-2, :]
+    p[:, 0] = p[:, 1]
+    p[:, -1] = p[:, -2]
+
+    p[0, 0] = p[1, 1]
+    p[0, -1] = p[1, -2]
+    p[-1, 0] = p[-2, 1]
+    p[-1, -1] = p[-2, -2]
+
+    p = p.flatten()
+    return p
 
 
 def p_grad(p: np.ndarray[float], grid: StaggeredGrid) -> np.ndarray[float]:

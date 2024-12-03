@@ -17,7 +17,7 @@ dependencies = [
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["ns_solvers"]
+packages = ["ns_solvers", "vtk_parser"]
 
 [project.scripts]
 ns_driver = "ns_solvers.driver:main"
