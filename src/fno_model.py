@@ -14,11 +14,13 @@ import matplotlib.animation as animation
 
 
 device = "cpu"
+SIM_DATASET = Path("/Users/zackjensen/data/DecayingTurbulence2D")
+MODELS_FOLDER = Path("/Users/zackjensen/CE_project/models")
 
 
 def train():
 
-    train_data, test_data = SimDataset.train_test_datasets(Path("/Users/zackjensen/data/DecayingTurbulence2D"))
+    train_data, test_data = SimDataset.train_test_datasets(SIM_DATASET)
     print(f"Test_idxs: {test_data.sim_idxs}")
 
     for training_resolution, epochs in zip([16, 32, 64], [2, 6, 10]):
@@ -28,7 +30,6 @@ def train():
                     out_channels=2,
                     hidden_channels=32,
                     projection_channel_ratio=2)
-        # model = load_model(f"model_{training_resolution}_2")
 
         model = model.to(device)
 
@@ -66,13 +67,11 @@ def train():
                       training_loss=train_loss,
                       eval_losses=eval_losses)
 
-        model.save_checkpoint(Path("/Users/zackjensen/CE_project/models"), f"model_{training_resolution}_6")
+        model.save_checkpoint(MODELS_FOLDER, f"model_{training_resolution}_6")
 
 
 def load_model(model_name):
-    model_path = Path("/Users/zackjensen/CE_project/models")
-
-    model = FNO.from_checkpoint(model_path, model_name)
+    model = FNO.from_checkpoint(MODELS_FOLDER, model_name)
     return model
 
 
@@ -123,7 +122,7 @@ def vorticity_anim_2(vf_ref, model, res: int):
 
 def plot_model(res, steps = 10):
     model = load_model(f"model_{res}_6")
-    dataset = SimDataset(Path("/Users/zackjensen/data/DecayingTurbulence2D"))
+    dataset = sim_dataset = SimDataset(SIM_DATASET)
     vf_ref = dataset.frames[4]
     v_pred = vf_ref[0]
     for _ in range(steps):
@@ -142,17 +141,9 @@ def plot_model(res, steps = 10):
     ax2.set_xlabel('Vorticity Prediction')
     plt.show()
 
-    # vorticity_anim_2(vf_ref, model, res)
-
-
-# test_idxs_2 = [1, 7, 9, 12, 14, 15, 18, 19, 28, 37, 43]
-
 
 def main():
-    plot_model(16)
-    plot_model(32)
-    plot_model(64)
-
+    pass
 
 if __name__ == "__main__":
     main()
