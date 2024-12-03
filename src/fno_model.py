@@ -83,7 +83,7 @@ def velocity_to_vorticity(vf: torch.Tensor) -> np.ndarray:
     return (dvdx - dudy).detach().numpy()
 
 
-def vorticity_anim_2(vf_ref, model, res: int):
+def vorticity_anim_2(vf_ref, model, res: int, steps: int | None = None):
     f, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
 
     idx = 1
@@ -102,7 +102,7 @@ def vorticity_anim_2(vf_ref, model, res: int):
         nonlocal velocity_pred
         idx += 1
         # for each frame, update the data stored on each artist.
-        if idx > 10:
+        if idx > (steps or 10):
             return (f,)
 
         ax1.set_title(f'Time: {(idx * dt):.4f} s')
@@ -143,7 +143,11 @@ def plot_model(res, steps = 10):
 
 
 def main():
-    pass
+    dataset = sim_dataset = SimDataset(SIM_DATASET)
+    vf_ref = dataset.frames[4]
+    for res in [16, 32, 64]:
+        model = load_model(f"model_{res}_6")
+        vorticity_anim_2(vf_ref, model, res, steps=25)
 
 if __name__ == "__main__":
     main()
